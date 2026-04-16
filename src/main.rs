@@ -1,225 +1,197 @@
-use tiny_http::{Server, Response, Header};
+use axum::{
+    routing::get,
+    Router,
+    Json,
+    extract::State,
+};
 use serde::Serialize;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::time::sleep;
 use rand::Rng;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use tower_http::cors::{CorsLayer, Any};
 
-#[derive(Serialize, Clone)]
+#[derive(Clone, Serialize)]
 struct Validator {
     id: usize,
     trust: f64,
+    drift_score: f64,
     influence: f64,
     status: String,
-    behavior_score: f64,
-    drift_score: f64,
-    shock: f64,
 
-    // NEW METRICS
-    risk_score: f64,
-    stability_score: f64,
-    threat_level: String,
+    epoch_id: u64,
+    epoch_age: u64,
+    epoch_start_tick: u64,
+    epoch_weight: f64,
+    epoch_key: String,
+
+    votes_for: f64,
+    votes_against: f64,
+    consensus_score: f64,
+    valid: bool,
 }
 
-fn create_network() -> Vec<Validator> {
+#[derive(Clone)]
+struct AppState {
+    validators: Arc<Mutex<Vec<Validator>>>,
+    tick: Arc<Mutex<u64>>,
+}
+
+#[tokio::main]
+async fn main() {
+    let state = AppState {
+        validators: Arc::new(Mutex::new(init_validators())),
+        tick: Arc::new(Mutex::new(0)),
+    };
+
+    // 🔁 SIM LOOP
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                {
+                    let mut validators = state.validators.lock().unwrap();
+                    let mut tick = state.tick.lock().unwrap();
+
+                    *tick += 1;
+                    let t = *tick;
+
+                    let attacker =
+                        ((t / 30) % validators.len() as u64) as usize;
+
+                    // -------------------------
+                    // STEP 1: BASE DYNAMICS
+                    // -------------------------
+                    for v in validators.iter_mut() {
+                        v.epoch_age = t - v.epoch_start_tick;
+
+                        if v.epoch_age > 20 {
+                            v.epoch_id += 1;
+                            v.epoch_start_tick = t;
+                            v.epoch_age = 0;
+                            v.epoch_key =
+                                format!("{:x}", rand::thread_rng().gen::<u32>());
+                        }
+
+                        // 🔥 STRONGER ATTACK
+                        if v.id == attacker {
+                            v.status = "attacked".into();
+                            v.trust -= 15.0;
+                        } else {
+                            v.status = "healthy".into();
+                            v.trust += 0.5;
+                        }
+
+                        // 🔥 GLOBAL DECAY
+                        v.trust -= 0.3;
+
+                        v.trust = v.trust.clamp(0.0, 100.0);
+
+                        v.drift_score =
+                            rand::thread_rng().gen_range(-30.0..30.0);
+
+                        v.influence = v.trust;
+                        v.epoch_weight = v.trust / 100.0;
+                    }
+
+                    // -------------------------
+                    // STEP 2: NETWORK EFFECT
+                    // -------------------------
+                    let snapshot = validators.clone();
+
+                    for v in validators.iter_mut() {
+                        let mut votes_for = 0.0;
+                        let mut votes_against = 0.0;
+
+                        for other in &snapshot {
+                            if other.id == v.id {
+                                continue;
+                            }
+
+                            // 🔥 TRUST-WEIGHTED VOTING
+                            if other.status == "healthy" {
+                                votes_for += other.trust;
+                            } else {
+                                votes_against += other.trust * 1.5;
+                            }
+
+                            // 🔥 CONTAGION
+                            if other.status == "attacked" {
+                                v.trust -= 0.2;
+                            }
+                        }
+
+                        v.votes_for = votes_for;
+                        v.votes_against = votes_against;
+
+                        let total = votes_for + votes_against;
+
+                        if total > 0.0 {
+                            v.consensus_score = votes_for / total;
+                        } else {
+                            v.consensus_score = 0.0;
+                        }
+
+                        // 🔥 HARDER CONSENSUS
+                        v.valid = v.consensus_score > 0.75;
+                    }
+                }
+
+                sleep(Duration::from_millis(150)).await;
+            }
+        });
+    }
+
+    // ✅ CORS
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    let app = Router::new()
+        .route("/simulation", get(get_simulation))
+        .layer(cors)
+        .with_state(state);
+
+    println!("🚀 http://127.0.0.1:8080");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:8080")
+        .await
+        .unwrap();
+
+    axum::serve(listener, app).await.unwrap();
+}
+
+async fn get_simulation(
+    State(state): State<AppState>,
+) -> Json<Vec<Validator>> {
+    let validators = state.validators.lock().unwrap();
+    Json(validators.clone())
+}
+
+fn init_validators() -> Vec<Validator> {
     let mut rng = rand::thread_rng();
 
     (0..20)
         .map(|i| Validator {
             id: i,
-            trust: 90.0 + rng.gen_range(-3.0..3.0),
-            influence: 65.0 + rng.gen_range(-5.0..5.0),
-            status: "normal".to_string(),
-            behavior_score: 92.0,
+            trust: 100.0,
             drift_score: 0.0,
-            shock: 0.0,
+            influence: 100.0,
+            status: "healthy".into(),
 
-            risk_score: 0.0,
-            stability_score: 0.0,
-            threat_level: "low".to_string(),
+            epoch_id: 0,
+            epoch_age: 0,
+            epoch_start_tick: 0,
+            epoch_weight: 1.0,
+            epoch_key: format!("{:x}", rng.gen::<u32>()),
+
+            votes_for: 0.0,
+            votes_against: 0.0,
+            consensus_score: 1.0,
+            valid: true,
         })
         .collect()
-}
-
-fn get_position(id: usize) -> (f64, f64) {
-    let x = (id % 5) as f64;
-    let y = (id / 5) as f64;
-    (x, y)
-}
-
-fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
-    ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
-}
-
-fn update_network(validators: &mut Vec<Validator>) {
-    let mut rng = rand::thread_rng();
-    let mut attacker_collapsed = false;
-
-    for v in validators.iter_mut() {
-        let is_attacker = v.id == 19;
-        let expected = 90.0;
-
-        let actual = if is_attacker {
-            if v.drift_score < 30.0 {
-                rng.gen_range(85.0..95.0)
-            } else if v.drift_score < 70.0 {
-                rng.gen_range(60.0..80.0)
-            } else {
-                rng.gen_range(10.0..40.0)
-            }
-        } else {
-            rng.gen_range(88.0..98.0)
-        };
-
-        v.behavior_score = (v.behavior_score * 0.85) + (actual * 0.15);
-
-        let deviation = expected - v.behavior_score;
-
-        if is_attacker {
-            v.drift_score += deviation.max(0.0) * 0.8;
-        } else {
-            v.drift_score += deviation.max(0.0) * 0.2;
-            v.drift_score *= 0.95;
-        }
-
-        if v.drift_score > 100.0 && is_attacker {
-            v.status = "attacked".to_string();
-            v.trust = 5.0;
-            attacker_collapsed = true;
-        } else if v.drift_score > 40.0 {
-            v.status = "drifting".to_string();
-        } else {
-            v.status = "normal".to_string();
-        }
-
-        if v.drift_score > 20.0 {
-            v.trust -= 4.0;
-        } else {
-            v.trust += 0.2;
-        }
-
-        v.trust = v.trust.clamp(0.0, 100.0);
-
-        if v.trust < 30.0 {
-            v.influence = 5.0;
-        } else {
-            v.influence = v.influence * 0.7 + v.trust * 0.3;
-        }
-    }
-
-    // SHOCKWAVE
-    if attacker_collapsed {
-        let attacker_pos = get_position(19);
-
-        let mut lost_influence = 0.0;
-
-        for v in validators.iter_mut() {
-            if v.id == 19 {
-                lost_influence = v.influence;
-                v.influence = 0.0;
-            }
-        }
-
-        for v in validators.iter_mut() {
-            if v.id != 19 {
-                let pos = get_position(v.id);
-                let dist = distance(pos, attacker_pos);
-
-                let shock_strength = (4.0 - dist).max(0.0) * 5.0;
-
-                v.shock = shock_strength;
-                v.influence += lost_influence / 19.0;
-            }
-        }
-    }
-
-    for v in validators.iter_mut() {
-        v.shock *= 0.85;
-
-        // COMPUTED METRICS
-        v.risk_score = v.drift_score + v.shock - v.trust * 0.5;
-        v.stability_score = v.behavior_score - v.drift_score;
-
-        v.threat_level = if v.drift_score > 80.0 {
-            "critical".to_string()
-        } else if v.drift_score > 40.0 {
-            "elevated".to_string()
-        } else {
-            "low".to_string()
-        };
-    }
-}
-
-fn main() {
-    let server = Server::http("0.0.0.0:8080").unwrap();
-
-    println!("🚀 Fluxlock API UPGRADED");
-
-    let network = Arc::new(Mutex::new(create_network()));
-
-    let sim = Arc::clone(&network);
-    thread::spawn(move || loop {
-        {
-            let mut net = sim.lock().unwrap();
-            update_network(&mut net);
-        }
-        thread::sleep(Duration::from_millis(1000));
-    });
-
-    for request in server.incoming_requests() {
-        let url = request.url().to_string();
-
-        let net = network.lock().unwrap();
-
-        if url == "/simulation" {
-            let json = serde_json::to_string(&*net).unwrap();
-
-            let response = Response::from_string(json)
-                .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
-                .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
-
-            let _ = request.respond(response);
-        }
-
-        else if url.starts_with("/validator/") {
-            let id = url.replace("/validator/", "").parse::<usize>().unwrap_or(0);
-            let node = net.iter().find(|n| n.id == id);
-
-            let json = serde_json::to_string(&node).unwrap();
-
-            let _ = request.respond(
-                Response::from_string(json)
-                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
-            );
-        }
-
-        else if url == "/health" {
-            let total = net.len();
-            let avg_trust: f64 = net.iter().map(|n| n.trust).sum::<f64>() / total as f64;
-
-            let response_data = serde_json::json!({
-                "total": total,
-                "avg_trust": avg_trust
-            });
-
-            let _ = request.respond(
-                Response::from_string(response_data.to_string())
-                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
-            );
-        }
-
-        else if url == "/risk" {
-            let mut sorted = net.clone();
-            sorted.sort_by(|a, b| b.risk_score.partial_cmp(&a.risk_score).unwrap());
-
-            let _ = request.respond(
-                Response::from_string(serde_json::to_string(&sorted).unwrap())
-                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
-            );
-        }
-
-        else {
-            let _ = request.respond(Response::from_string("Not Found"));
-        }
-    }
 }
