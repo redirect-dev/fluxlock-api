@@ -1,71 +1,109 @@
-use crate::routes::validate::{IdentityInput, ValidationResult};
+use serde::Serialize;
 
-pub fn validate_identity_logic(input: IdentityInput) -> ValidationResult {
-    let trust = input.trust;
-    let drift = input.drift.unwrap_or(0.0);
-    let epoch_valid = input.epoch_valid.unwrap_or(true);
+#[derive(Serialize)]
+pub struct ValidationResult {
+    pub valid: bool,
+    pub reason: String,
+}
 
-    // -------------------------------
-    // 1. HARD FAIL — tampered identity
-    // -------------------------------
+/// Core Fluxlock identity validation logic
+pub fn validate_identity_logic(
+    trust: f64,
+    drift: f64,
+    epoch_age: u64,
+    epoch_valid: bool,
+) -> ValidationResult {
+    // =========================
+    // 🔴 HARD FAIL CONDITIONS
+    // =========================
+
+    // Identity tampering / invalid epoch
     if !epoch_valid {
         return ValidationResult {
             valid: false,
-            reason: "invalid continuity (tampered identity)".to_string(),
-            confidence: 0.1,
+            reason: "epoch integrity failure (tampered identity)".to_string(),
         };
     }
 
-    // -------------------------------
-    // 2. TRUE FAILURE (very rare)
-    // -------------------------------
-    if drift > 180.0 && trust < -80.0 {
+    // Extreme instability — drift overrides everything
+    if drift >= 95.0 {
         return ValidationResult {
             valid: false,
-            reason: "identity irrecoverable".to_string(),
-            confidence: 0.1,
+            reason: "critical instability (drift too high)".to_string(),
         };
     }
 
-    // -------------------------------
-    // 3. RECOVERY FLOOR (CRITICAL)
-    // -------------------------------
-    if trust < 20.0 {
+    // =========================
+    // 🟡 ROTATION PROBATION WINDOW
+    // =========================
+
+    if epoch_age <= 2 {
+        if drift > 70.0 {
+            return ValidationResult {
+                valid: false,
+                reason: "new identity unstable (rotation probation)".to_string(),
+            };
+        }
+
         return ValidationResult {
             valid: true,
-            reason: "low trust (recovery enforced)".to_string(),
-            confidence: 0.6,
+            reason: "new identity stabilizing (probation window)".to_string(),
         };
     }
 
-    // -------------------------------
-    // 4. HIGH INSTABILITY (ALLOW)
-    // -------------------------------
+    // =========================
+    // 🔶 HIGH INSTABILITY ZONE
+    // =========================
+
+    if drift > 85.0 {
+        return ValidationResult {
+            valid: false,
+            reason: "identity unstable (high drift)".to_string(),
+        };
+    }
+
     if drift > 60.0 {
         return ValidationResult {
             valid: true,
             reason: "high instability (recovery in progress)".to_string(),
-            confidence: 0.5,
         };
     }
 
-    // -------------------------------
-    // 5. NORMAL RECOVERY
-    // -------------------------------
-    if trust < 60.0 {
+    // =========================
+    // 🔵 LOW TRUST RECOVERY MODE
+    // =========================
+
+    if trust < 30.0 {
         return ValidationResult {
             valid: true,
-            reason: "recovering identity".to_string(),
-            confidence: 0.7,
+            reason: "low trust (recovery enforced)".to_string(),
         };
     }
 
-    // -------------------------------
-    // 6. STABLE
-    // -------------------------------
+    // =========================
+    // 🟢 NORMAL OPERATION
+    // =========================
+
+    if trust > 70.0 && drift < 50.0 {
+        return ValidationResult {
+            valid: true,
+            reason: "identity valid (stable + continuous)".to_string(),
+        };
+    }
+
+    if trust > 50.0 {
+        return ValidationResult {
+            valid: true,
+            reason: "identity valid (moderate confidence)".to_string(),
+        };
+    }
+
+    // =========================
+    // 🔻 DEFAULT FALLBACK
+    // =========================
+
     ValidationResult {
-        valid: true,
-        reason: "identity valid (stable + continuous)".to_string(),
-        confidence: (trust / 100.0).min(1.0),
+        valid: false,
+        reason: "identity confidence insufficient".to_string(),
     }
 }

@@ -1,33 +1,25 @@
-use axum::{Json};
-use serde::{Deserialize, Serialize};
+use axum::{extract::Json, response::Json as ResponseJson};
+use serde::Deserialize;
 
-use crate::engine::identity_validator::validate_identity_logic;
+use crate::engine::identity_validator::{validate_identity_logic, ValidationResult};
 
-// ---------------- INPUT ----------------
 #[derive(Deserialize)]
 pub struct IdentityInput {
-    pub identity: String,
-    pub epoch: u64,
-    pub current_epoch: u64,
-    pub lineage_valid: bool,
     pub trust: f64,
-
-    pub drift: Option<f64>,
-    pub epoch_valid: Option<bool>,
+    pub drift: f64,
+    pub epoch_age: u64,
+    pub epoch_valid: bool,
 }
 
-// ---------------- OUTPUT ----------------
-#[derive(Serialize)]
-pub struct ValidationResult {
-    pub valid: bool,
-    pub reason: String,
-    pub confidence: f64,
-}
-
-// ---------------- ROUTE ----------------
 pub async fn validate_identity(
     Json(payload): Json<IdentityInput>,
-) -> Json<ValidationResult> {
-    let result = validate_identity_logic(payload);
-    Json(result)
+) -> ResponseJson<ValidationResult> {
+    let result = validate_identity_logic(
+        payload.trust,
+        payload.drift,
+        payload.epoch_age,
+        payload.epoch_valid,
+    );
+
+    ResponseJson(result)
 }

@@ -1,5 +1,7 @@
-use axum::{routing::post, Router};
-use std::net::SocketAddr;
+use axum::{
+    routing::post,
+    Router,
+};
 use tower_http::cors::{CorsLayer, Any};
 
 mod routes;
@@ -13,10 +15,11 @@ async fn main() {
         .allow_headers(Any);
 
     let app = Router::new()
-        .route("/validate-identity", post(routes::validate::validate_identity))
+        .route("/validate", post(routes::validate::validate_identity))
         .layer(cors);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3001));
+    let addr = "127.0.0.1:3001";
+
     println!("Fluxlock API running on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr)
