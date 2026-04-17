@@ -1,7 +1,5 @@
-use axum::{extract::Json, response::Json as ResponseJson};
-use serde::Deserialize;
-
-use crate::engine::identity_validator::{validate_identity_logic, ValidationResult};
+use axum::Json;
+use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
 pub struct IdentityInput {
@@ -11,15 +9,18 @@ pub struct IdentityInput {
     pub epoch_valid: bool,
 }
 
-pub async fn validate_identity(
-    Json(payload): Json<IdentityInput>,
-) -> ResponseJson<ValidationResult> {
-    let result = validate_identity_logic(
-        payload.trust,
-        payload.drift,
-        payload.epoch_age,
-        payload.epoch_valid,
-    );
+#[derive(Serialize)]
+pub struct ValidationResult {
+    pub valid: bool,
+    pub reason: String,
+}
 
-    ResponseJson(result)
+// 🔥 TEMP SAFE STUB
+pub async fn validate_identity(
+    Json(_payload): Json<IdentityInput>,
+) -> Json<ValidationResult> {
+    Json(ValidationResult {
+        valid: true,
+        reason: "stub".to_string(),
+    })
 }

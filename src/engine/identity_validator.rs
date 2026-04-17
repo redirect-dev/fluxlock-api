@@ -1,32 +1,43 @@
-use serde::Serialize;
+// identity_validator.rs
+// 🔥 UPDATED FOR INSTANT COMPROMISE MODEL
 
-#[derive(Serialize)]
 pub struct ValidationResult {
     pub valid: bool,
     pub reason: String,
 }
 
-/// Core Fluxlock identity validation logic
 pub fn validate_identity_logic(
     trust: f64,
     drift: f64,
     epoch_age: u64,
     epoch_valid: bool,
+    compromised: bool, // 🔥 NEW
 ) -> ValidationResult {
-    // =========================
-    // 🔴 HARD FAIL CONDITIONS
-    // =========================
 
-    // Identity tampering / invalid epoch
-    if !epoch_valid {
+    // =========================
+    // 🔴 HARD FAILURE — COMPROMISED
+    // =========================
+    if compromised {
         return ValidationResult {
             valid: false,
-            reason: "epoch integrity failure (tampered identity)".to_string(),
+            reason: "identity compromised (key breach detected)".to_string(),
         };
     }
 
-    // Extreme instability — drift overrides everything
-    if drift >= 95.0 {
+    // =========================
+    // 🔴 HARD FAILURE — INVALID EPOCH
+    // =========================
+    if !epoch_valid {
+        return ValidationResult {
+            valid: false,
+            reason: "invalid epoch (tampered identity)".to_string(),
+        };
+    }
+
+    // =========================
+    // 🔴 HIGH DRIFT = REJECT
+    // =========================
+    if drift > 90.0 {
         return ValidationResult {
             valid: false,
             reason: "critical instability (drift too high)".to_string(),
@@ -34,44 +45,14 @@ pub fn validate_identity_logic(
     }
 
     // =========================
-    // 🟡 ROTATION PROBATION WINDOW
+    // 🟡 RECOVERY STATES
     // =========================
-
-    if epoch_age <= 2 {
-        if drift > 70.0 {
-            return ValidationResult {
-                valid: false,
-                reason: "new identity unstable (rotation probation)".to_string(),
-            };
-        }
-
-        return ValidationResult {
-            valid: true,
-            reason: "new identity stabilizing (probation window)".to_string(),
-        };
-    }
-
-    // =========================
-    // 🔶 HIGH INSTABILITY ZONE
-    // =========================
-
-    if drift > 85.0 {
-        return ValidationResult {
-            valid: false,
-            reason: "identity unstable (high drift)".to_string(),
-        };
-    }
-
-    if drift > 60.0 {
+    if drift > 70.0 {
         return ValidationResult {
             valid: true,
             reason: "high instability (recovery in progress)".to_string(),
         };
     }
-
-    // =========================
-    // 🔵 LOW TRUST RECOVERY MODE
-    // =========================
 
     if trust < 30.0 {
         return ValidationResult {
@@ -80,30 +61,18 @@ pub fn validate_identity_logic(
         };
     }
 
-    // =========================
-    // 🟢 NORMAL OPERATION
-    // =========================
-
-    if trust > 70.0 && drift < 50.0 {
+    if trust < 60.0 {
         return ValidationResult {
             valid: true,
-            reason: "identity valid (stable + continuous)".to_string(),
-        };
-    }
-
-    if trust > 50.0 {
-        return ValidationResult {
-            valid: true,
-            reason: "identity valid (moderate confidence)".to_string(),
+            reason: "recovering identity".to_string(),
         };
     }
 
     // =========================
-    // 🔻 DEFAULT FALLBACK
+    // 🟢 HEALTHY
     // =========================
-
     ValidationResult {
-        valid: false,
-        reason: "identity confidence insufficient".to_string(),
+        valid: true,
+        reason: "identity valid (stable + continuous)".to_string(),
     }
 }

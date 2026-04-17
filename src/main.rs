@@ -1,32 +1,25 @@
+mod state;
+mod routes;
+
 use axum::{
     routing::post,
     Router,
 };
-use tower_http::cors::{CorsLayer, Any};
 
-mod routes;
-mod engine;
+use routes::sign::sign;
+use routes::verify::verify;
 
 #[tokio::main]
 async fn main() {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
     let app = Router::new()
-        .route("/validate", post(routes::validate::validate_identity))
-        .layer(cors);
+        .route("/sign", post(sign))
+        .route("/verify", post(verify));
 
-    let addr = "127.0.0.1:3001";
-
-    println!("Fluxlock API running on http://{}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr)
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3001")
         .await
         .unwrap();
 
-    axum::serve(listener, app)
-        .await
-        .unwrap();
+    println!("🚀 Fluxlock PQ API running on http://127.0.0.1:3001");
+
+    axum::serve(listener, app).await.unwrap();
 }
