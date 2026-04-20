@@ -1,6 +1,3 @@
-// identity_validator.rs
-// 🔥 UPDATED FOR INSTANT COMPROMISE MODEL
-
 pub struct ValidationResult {
     pub valid: bool,
     pub reason: String,
@@ -11,68 +8,60 @@ pub fn validate_identity_logic(
     drift: f64,
     epoch_age: u64,
     epoch_valid: bool,
-    compromised: bool, // 🔥 NEW
+    compromised: bool,
+    network_accepted: bool, // 🔥 NEW
 ) -> ValidationResult {
 
-    // =========================
-    // 🔴 HARD FAILURE — COMPROMISED
-    // =========================
+    // 🔴 HARD FAILS
     if compromised {
         return ValidationResult {
             valid: false,
-            reason: "identity compromised (key breach detected)".to_string(),
+            reason: "identity compromised".into(),
         };
     }
 
-    // =========================
-    // 🔴 HARD FAILURE — INVALID EPOCH
-    // =========================
     if !epoch_valid {
         return ValidationResult {
             valid: false,
-            reason: "invalid epoch (tampered identity)".to_string(),
+            reason: "invalid identity chain".into(),
         };
     }
 
-    // =========================
-    // 🔴 HIGH DRIFT = REJECT
-    // =========================
-    if drift > 90.0 {
+    // 🔥 CRITICAL ADDITION — MATURITY GATE
+    if epoch_age < 120 {
         return ValidationResult {
             valid: false,
-            reason: "critical instability (drift too high)".to_string(),
+            reason: "identity too new (maturing)".into(),
         };
     }
 
-    // =========================
-    // 🟡 RECOVERY STATES
-    // =========================
-    if drift > 70.0 {
+    // 🔥 NETWORK MUST AGREE
+    if !network_accepted {
         return ValidationResult {
-            valid: true,
-            reason: "high instability (recovery in progress)".to_string(),
+            valid: false,
+            reason: "network has not accepted identity".into(),
         };
     }
 
-    if trust < 30.0 {
+    // 🔴 INSTABILITY
+    if drift > 80.0 {
         return ValidationResult {
-            valid: true,
-            reason: "low trust (recovery enforced)".to_string(),
+            valid: false,
+            reason: "unstable identity (high drift)".into(),
         };
     }
 
+    // 🟡 RECOVERY ZONE
     if trust < 60.0 {
         return ValidationResult {
             valid: true,
-            reason: "recovering identity".to_string(),
+            reason: "recovering identity".into(),
         };
     }
 
-    // =========================
     // 🟢 HEALTHY
-    // =========================
     ValidationResult {
         valid: true,
-        reason: "identity valid (stable + continuous)".to_string(),
+        reason: "identity stable and verified".into(),
     }
 }
