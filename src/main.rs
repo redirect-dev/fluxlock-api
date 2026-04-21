@@ -1,6 +1,6 @@
 mod state;
 mod network_state;
-mod engine;   // 🔥 THIS LINE FIXES YOUR ERROR
+mod engine;
 mod routes;
 
 use axum::{
@@ -12,21 +12,39 @@ use std::sync::{Arc, Mutex};
 use routes::sign::sign;
 use routes::verify::verify;
 use routes::validate::validate_identity;
+use routes::attack::{spike, breach, network}; // 🔥 NEW
 
 use network_state::NetworkState;
 
 #[tokio::main]
 async fn main() {
-    // =========================
-    // 🧠 GLOBAL STATE (SOURCE OF TRUTH)
-    // =========================
     let state = Arc::new(Mutex::new(NetworkState::new()));
 
+    // 🔁 ENGINE LOOP
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        loop {
+            {
+                let mut s = state_clone.lock().unwrap();
+                s.tick();
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+    });
+
+    // 🌐 ROUTER
     let app = Router::new()
         .route("/sign", post(sign))
         .route("/verify", post(verify))
         .route("/validate", post(validate_identity))
         .route("/state", get(get_state))
+
+        // 🔥 ATTACK ROUTES
+        .route("/attack/spike", post(spike))
+        .route("/attack/breach", post(breach))
+        .route("/attack/network", post(network))
+
         .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3001")
