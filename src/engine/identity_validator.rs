@@ -1,67 +1,58 @@
-pub struct ValidationResult {
-    pub valid: bool,
-    pub reason: String,
+use pqcrypto_dilithium::dilithium2;
+use pqcrypto_traits::sign::{PublicKey, SecretKey, SignedMessage, DetachedSignature};
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
+
+// =========================
+// 🔐 GLOBAL KEY STORE
+// =========================
+pub static KEY_STORE: Lazy<
+    Mutex<HashMap<u32, (dilithium2::PublicKey, dilithium2::SecretKey)>>
+> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+// =========================
+// 🔑 CREATE IDENTITY
+// =========================
+pub fn generate_identity(id: u32) -> Vec<u8> {
+    let (pk, sk) = dilithium2::keypair();
+
+    let mut store = KEY_STORE.lock().unwrap();
+    store.insert(id, (pk.clone(), sk));
+
+    pk.as_bytes().to_vec()
 }
 
-pub fn validate_identity_logic(
-    trust: f64,
-    drift: f64,
-    epoch_age: u64,
-    epoch_valid: bool,
-    compromised: bool,
-    network_accepted: bool, // 🔥 NEW
-) -> ValidationResult {
+// =========================
+// 🔁 ROTATE IDENTITY (SIGNED)
+// =========================
+pub fn rotate_identity(id: u32, new_message: &[u8]) -> Vec<u8> {
+    let mut store = KEY_STORE.lock().unwrap();
 
-    // 🔴 HARD FAILS
-    if compromised {
-        return ValidationResult {
-            valid: false,
-            reason: "identity compromised".into(),
-        };
-    }
+    let (old_pk, old_sk) = store.get(&id).unwrap().clone();
 
-    if !epoch_valid {
-        return ValidationResult {
-            valid: false,
-            reason: "invalid identity chain".into(),
-        };
-    }
+    // sign new identity with old key
+    let signature = dilithium2::sign_detached(new_message, &old_sk);
 
-    // 🔥 CRITICAL ADDITION — MATURITY GATE
-    if epoch_age < 120 {
-        return ValidationResult {
-            valid: false,
-            reason: "identity too new (maturing)".into(),
-        };
-    }
+    // generate new keypair
+    let (new_pk, new_sk) = dilithium2::keypair();
 
-    // 🔥 NETWORK MUST AGREE
-    if !network_accepted {
-        return ValidationResult {
-            valid: false,
-            reason: "network has not accepted identity".into(),
-        };
-    }
+    store.insert(id, (new_pk.clone(), new_sk));
 
-    // 🔴 INSTABILITY
-    if drift > 80.0 {
-        return ValidationResult {
-            valid: false,
-            reason: "unstable identity (high drift)".into(),
-        };
-    }
+    signature.as_bytes().to_vec()
+}
 
-    // 🟡 RECOVERY ZONE
-    if trust < 60.0 {
-        return ValidationResult {
-            valid: true,
-            reason: "recovering identity".into(),
-        };
-    }
+// =========================
+// ✅ VERIFY CHAIN LINK
+// =========================
+pub fn verify_link(
+    old_pk_bytes: &[u8],
+    new_message: &[u8],
+    sig_bytes: &[u8],
+) -> bool {
+    let pk = dilithium2::PublicKey::from_bytes(old_pk_bytes).unwrap();
+    let sig = dilithium2::DetachedSignature::from_bytes(sig_bytes).unwrap();
 
-    // 🟢 HEALTHY
-    ValidationResult {
-        valid: true,
-        reason: "identity stable and verified".into(),
-    }
+    dilithium2::verify_detached_signature(&sig, new_message, &pk).is_ok()
 }

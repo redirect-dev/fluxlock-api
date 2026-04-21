@@ -143,6 +143,7 @@ dependencies = [
  "pqcrypto-traits",
  "rand",
  "serde",
+ "serde_json",
  "tokio",
 ]
 

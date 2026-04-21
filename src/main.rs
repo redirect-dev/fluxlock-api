@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 use routes::sign::sign;
 use routes::verify::verify;
 use routes::validate::validate_identity;
-use routes::attack::{spike, breach, network}; // 🔥 NEW
+use routes::attack::{spike, breach, network};
+use routes::evaluate::evaluate;
 
 use network_state::NetworkState;
 
@@ -33,14 +34,16 @@ async fn main() {
         }
     });
 
-    // 🌐 ROUTER
     let app = Router::new()
         .route("/sign", post(sign))
         .route("/verify", post(verify))
         .route("/validate", post(validate_identity))
         .route("/state", get(get_state))
 
-        // 🔥 ATTACK ROUTES
+        // 🔥 CORE PRODUCT
+        .route("/evaluate", post(evaluate))
+
+        // ⚔ ATTACKS
         .route("/attack/spike", post(spike))
         .route("/attack/breach", post(breach))
         .route("/attack/network", post(network))
