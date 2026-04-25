@@ -1,5 +1,5 @@
 use pqcrypto_dilithium::dilithium2;
-use pqcrypto_traits::sign::{PublicKey, SecretKey, SignedMessage, DetachedSignature};
+use pqcrypto_traits::sign::{PublicKey, SecretKey, DetachedSignature};
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -30,10 +30,10 @@ pub fn generate_identity(id: u32) -> Vec<u8> {
 pub fn rotate_identity(id: u32, new_message: &[u8]) -> Vec<u8> {
     let mut store = KEY_STORE.lock().unwrap();
 
-    let (old_pk, old_sk) = store.get(&id).unwrap().clone();
+    let (_old_pk, old_sk) = store.get(&id).unwrap().clone();
 
-    // sign new identity with old key
-    let signature = dilithium2::sign_detached(new_message, &old_sk);
+    // 🔥 FIXED FUNCTION NAME
+    let signature = dilithium2::detached_sign(new_message, &old_sk);
 
     // generate new keypair
     let (new_pk, new_sk) = dilithium2::keypair();
@@ -51,8 +51,86 @@ pub fn verify_link(
     new_message: &[u8],
     sig_bytes: &[u8],
 ) -> bool {
-    let pk = dilithium2::PublicKey::from_bytes(old_pk_bytes).unwrap();
-    let sig = dilithium2::DetachedSignature::from_bytes(sig_bytes).unwrap();
+    let pk = match dilithium2::PublicKey::from_bytes(old_pk_bytes) {
+        Ok(pk) => pk,
+        Err(_) => return false,
+    };
+
+    let sig = match dilithium2::DetachedSignature::from_bytes(sig_bytes) {
+        Ok(sig) => sig,
+        Err(_) => return false,
+    };
 
     dilithium2::verify_detached_signature(&sig, new_message, &pk).is_ok()
+}
+
+// =========================
+// 🧠 VALIDATION LOGIC (REQUIRED BY API)
+// =========================
+pub struct ValidationResult {
+    pub valid: bool,
+    pub reason: String,
+}
+
+pub fn validate_identity_logic(
+    trust: f64,
+    drift: f64,
+    epoch_age: u64,
+    epoch_valid: bool,
+    compromised: bool,
+    network_accepted: bool,
+) -> ValidationResult {
+
+    // 🔴 HARD FAILS
+    if compromised {
+        return ValidationResult {
+            valid: false,
+            reason: "identity compromised".into(),
+        };
+    }
+
+    if !epoch_valid {
+        return ValidationResult {
+            valid: false,
+            reason: "invalid identity chain".into(),
+        };
+    }
+
+    // 🔥 MATURITY GATE
+    if epoch_age < 120 {
+        return ValidationResult {
+            valid: false,
+            reason: "identity too new (maturing)".into(),
+        };
+    }
+
+    // 🔥 NETWORK CONSENSUS REQUIRED
+    if !network_accepted {
+        return ValidationResult {
+            valid: false,
+            reason: "network has not accepted identity".into(),
+        };
+    }
+
+    // 🔴 INSTABILITY
+    if drift > 80.0 {
+        return ValidationResult {
+            valid: false,
+            reason: "unstable identity (high drift)".into(),
+        };
+    }
+
+    // 🟡 RECOVERY
+    if trust < 60.0 {
+        return ValidationResult {
+            valid: true,
+            reason: "recovering identity".into(),
+        };
+    }
+
+    // 🟢 HEALTHY
+    ValidationResult {
+        valid: true,
+        reason: "identity stable and verified".into(),
+    }
 }

@@ -17,11 +17,17 @@ use routes::evaluate::evaluate;
 
 use network_state::NetworkState;
 
+// 🔥 CORS
+use tower_http::cors::{CorsLayer, Any};
+use axum::http::Method;
+
 #[tokio::main]
 async fn main() {
     let state = Arc::new(Mutex::new(NetworkState::new()));
 
+    // =========================
     // 🔁 ENGINE LOOP
+    // =========================
     let state_clone = state.clone();
     tokio::spawn(async move {
         loop {
@@ -34,6 +40,17 @@ async fn main() {
         }
     });
 
+    // =========================
+    // 🌐 CORS CONFIG (🔥 FIX)
+    // =========================
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers(Any);
+
+    // =========================
+    // 🚀 ROUTER
+    // =========================
     let app = Router::new()
         .route("/sign", post(sign))
         .route("/verify", post(verify))
@@ -48,6 +65,7 @@ async fn main() {
         .route("/attack/breach", post(breach))
         .route("/attack/network", post(network))
 
+        .layer(cors) // 🔥 THIS FIXES YOUR ISSUE
         .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3001")
