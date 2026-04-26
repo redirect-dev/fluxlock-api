@@ -1,6 +1,6 @@
+use pqcrypto_traits::sign::PublicKey;
 use serde::{Serialize, Deserialize};
 use rand::Rng;
-use pqcrypto_traits::sign::PublicKey;
 
 use crate::engine::identity_validator::{
     generate_identity,
@@ -37,24 +37,17 @@ pub struct Validator {
     pub chain_valid: bool,
 
     pub continuity_score: f64,
-    pub identity_age: u64,
-    pub last_chain_break: u64,
 
     pub historical_drift: Vec<f64>,
     pub instability_score: f64,
 
-    // 🔥 CONSENSUS (FIXED)
-    pub peer_votes_valid: u32,
-    pub peer_votes_invalid: u32,
-    pub network_accepted: bool,
+    pub confidence: f64,
+    pub behavior_score: f64,
+
+    // 🔥 CONSENSUS VISIBILITY (RESTORED)
     pub local_valid: bool,
     pub global_valid: bool,
-    pub consensus_confidence: f64,
-
-    // PRODUCT
-    pub confidence: f64,
-    pub risk_score: f64,
-    pub behavior_score: f64,
+    pub network_accepted: bool,
 
     pub decision: String,
     pub weight: f64,
@@ -68,7 +61,6 @@ pub struct Validator {
 pub struct NetworkState {
     pub validators: Vec<Validator>,
     pub global_epoch: u64,
-    pub epoch_pressure: f64,
 }
 
 // =========================
@@ -96,22 +88,17 @@ impl NetworkState {
                 chain_valid: true,
 
                 continuity_score: 100.0,
-                identity_age: 0,
-                last_chain_break: 0,
 
                 historical_drift: vec![],
                 instability_score: 0.0,
 
-                peer_votes_valid: 0,
-                peer_votes_invalid: 0,
-                network_accepted: false,
+                confidence: 0.5,
+                behavior_score: 100.0,
+
+                // 🔥 INIT CONSENSUS FLAGS
                 local_valid: false,
                 global_valid: false,
-                consensus_confidence: 0.0,
-
-                confidence: 0.5,
-                risk_score: 0.2,
-                behavior_score: 100.0,
+                network_accepted: false,
 
                 decision: "WEIGHTED".into(),
                 weight: 0.2,
@@ -122,7 +109,6 @@ impl NetworkState {
         Self {
             validators,
             global_epoch: 0,
-            epoch_pressure: 0.0,
         }
     }
 }
@@ -134,54 +120,47 @@ impl NetworkState {
     pub fn tick(&mut self) {
         self.global_epoch += 1;
 
-        // 🔥 SLOWER PRESSURE (FIX)
-        self.epoch_pressure = (self.global_epoch as f64 / 2000.0).min(1.0);
-
-        self.simulate_step();
-        self.apply_consensus();
+        self.simulate();
+        self.consensus();
     }
 }
 
 // =========================
-// ⚙️ EVOLUTION
+// ⚙️ EVOLUTION ENGINE
 // =========================
 impl NetworkState {
-    fn simulate_step(&mut self) {
+
+    fn simulate(&mut self) {
         let mut rng = rand::thread_rng();
 
         let snapshot: Vec<(u32, f64, f64)> =
             self.validators.iter().map(|v| (v.id, v.trust, v.drift)).collect();
 
-        let avg_trust =
-            snapshot.iter().map(|(_, t, _)| t).sum::<f64>() / snapshot.len() as f64;
-
         for v in &mut self.validators {
-            v.epoch_age += 1;
-            v.identity_age += 1;
 
-            // 🔁 CONTROLLED ROTATION (FIX)
-            if (v.epoch_age > 350 ||
-                (self.epoch_pressure > 0.8 && v.drift < 20.0))
-                && v.recovery_timer == 0
-            {
+            v.epoch_age += 1;
+
+            // 🔁 ROTATE IDENTITY (CORE NOVELTY)
+            if v.epoch_age > 300 && v.recovery_timer == 0 {
                 Self::rotate_identity(v);
                 v.epoch_age = 0;
             }
 
-            v.drift *= 0.96;
+            // 🔻 DRIFT DECAY
+            v.drift *= 0.97;
 
+            // 🌊 NETWORK INFLUENCE
             for (peer_id, _, peer_drift) in &snapshot {
                 if *peer_id == v.id { continue; }
 
                 if *peer_drift > 60.0 {
-                    let influence = (*peer_drift / 200.0)
-                        * rng.gen_range(2.0..5.0);
-                    v.drift += influence;
+                    v.drift += (*peer_drift / 200.0) * rng.gen_range(1.0..3.0);
                 }
             }
 
+            // 📊 INSTABILITY MEMORY
             v.historical_drift.push(v.drift);
-            if v.historical_drift.len() > 50 {
+            if v.historical_drift.len() > 30 {
                 v.historical_drift.remove(0);
             }
 
@@ -189,26 +168,27 @@ impl NetworkState {
                 v.historical_drift.iter().sum::<f64>()
                 / v.historical_drift.len() as f64;
 
-            if v.trust < avg_trust {
-                v.trust += 0.2;
-            }
-
+            // 🎯 TRUST ADJUSTMENT
             if v.instability_score > 40.0 {
-                v.trust *= 0.9;
+                v.trust *= 0.95;
+            } else {
+                v.trust += 0.1;
             }
 
+            // ⚡ RANDOM EVENT
             if rng.gen_bool(0.002) {
-                v.drift += rng.gen_range(10.0..25.0);
-                v.trust -= rng.gen_range(5.0..10.0);
-                v.recovery_timer = 100;
+                v.drift += rng.gen_range(10.0..20.0);
+                v.trust -= 5.0;
+                v.recovery_timer = 80;
             }
 
+            // 🔁 RECOVERY STATE
             if v.recovery_timer > 0 {
-                v.status = "recovering".into();
                 v.recovery_timer -= 1;
+                v.status = "recovering".into();
             } else if v.drift > 80.0 {
                 v.status = "attacked".into();
-            } else if v.drift > 25.0 {
+            } else if v.drift > 30.0 {
                 v.status = "warning".into();
             } else {
                 v.status = "healthy".into();
@@ -222,7 +202,7 @@ impl NetworkState {
     fn rotate_identity(v: &mut Validator) {
         let last = v.identity_chain.last().unwrap();
 
-        let msg = format!("validator-{}-epoch", v.id).into_bytes();
+        let msg = format!("validator-{}", v.id).into_bytes();
         let sig = crypto_rotate(v.id, &msg);
 
         let new_pk = {
@@ -253,65 +233,61 @@ impl NetworkState {
 }
 
 // =========================
-// 🗳️ CONSENSUS (FIXED)
+// 🗳️ CONSENSUS ENGINE (FIXED)
 // =========================
 impl NetworkState {
-    fn apply_consensus(&mut self) {
+
+    fn consensus(&mut self) {
+
         let snapshot: Vec<(u32, f64)> =
             self.validators.iter().map(|v| (v.id, v.trust)).collect();
 
         for v in &mut self.validators {
-            let mut valid = 0;
-            let mut invalid = 0;
+
+            let mut score = 0.0;
 
             for (peer_id, peer_trust) in &snapshot {
                 if *peer_id == v.id { continue; }
 
-                let confidence =
-                    (v.trust / 100.0) * 0.6 +
-                    (1.0 - (v.drift / 150.0).min(1.0)) * 0.4;
+                let influence = peer_trust / 100.0;
+                let stability = 1.0 - (v.drift / 150.0).min(1.0);
 
-                if confidence > 0.5 + (*peer_trust / 100.0) * 0.1 {
-                    valid += 1;
-                } else {
-                    invalid += 1;
-                }
+                score += influence * stability;
             }
 
-            let total = valid + invalid;
-            let ratio = if total > 0 {
-                valid as f64 / total as f64
-            } else {
-                0.0
-            };
+            score /= snapshot.len() as f64;
 
-            let drift_factor = 1.0 - (v.drift / 150.0).min(1.0);
-            let trust_factor = v.trust / 100.0;
+            v.confidence = score.clamp(0.0, 1.0);
 
-            v.confidence = (ratio * trust_factor * drift_factor).clamp(0.0, 1.0);
-            v.risk_score = (1.0 - v.confidence).clamp(0.0, 1.0);
-
-            // 🔥 FIX: REAL CONSENSUS
+            // 🔥 RESTORED CONSENSUS SIGNALS
             v.local_valid = v.confidence > 0.5;
-            v.global_valid = ratio > 0.66;
-            v.network_accepted = v.local_valid && v.global_valid;
-            v.consensus_confidence = ratio;
+            v.global_valid = v.confidence > 0.7;
 
-            if v.confidence < 0.3 {
+            v.network_accepted =
+                v.local_valid &&
+                v.global_valid &&
+                v.chain_valid &&
+                v.epoch_age >= 120;
+
+            // 🎯 DECISION
+            if !v.chain_valid {
                 v.decision = "REJECT".into();
                 v.weight = 0.0;
-            } else if v.confidence < 0.7 {
+
+            } else if v.epoch_age < 120 {
                 v.decision = "WEIGHTED".into();
-                v.weight = v.confidence;
-            } else {
+                v.weight = 0.2;
+
+            } else if v.network_accepted {
                 v.decision = "ACCEPT".into();
+                v.weight = v.confidence;
+
+            } else {
+                v.decision = "WEIGHTED".into();
                 v.weight = v.confidence;
             }
 
-            v.reason = "adaptive trust evaluation".into();
-
-            v.peer_votes_valid = valid;
-            v.peer_votes_invalid = invalid;
+            v.reason = "continuity + behavior + consensus".into();
         }
     }
 }
@@ -323,10 +299,9 @@ impl NetworkState {
 
     pub fn spike_attack(&mut self, id: u32) {
         if let Some(v) = self.validators.iter_mut().find(|v| v.id == id) {
-            v.drift += 50.0;
+            v.drift += 60.0;
             v.trust *= 0.7;
-            v.recovery_timer = 120;
-            v.status = "attacked".into();
+            v.recovery_timer = 100;
         }
     }
 
@@ -335,17 +310,50 @@ impl NetworkState {
             v.chain_valid = false;
             v.trust *= 0.3;
             v.drift += 80.0;
-            v.status = "compromised".into();
         }
     }
 
     pub fn network_attack(&mut self) {
         for v in &mut self.validators {
-            v.drift += 30.0;
+            v.drift += 25.0;
             v.trust *= 0.85;
-            if v.recovery_timer == 0 {
-                v.recovery_timer = 80;
+        }
+    }
+}
+
+// =========================
+// 🔁 PRESSURE FEEDBACK
+// =========================
+impl NetworkState {
+
+    pub fn apply_access_feedback(
+        &mut self,
+        id: u32,
+        allowed: bool,
+        confidence: f64,
+    ) {
+        if let Some(v) = self.validators.iter_mut().find(|v| v.id == id) {
+
+            let is_maturing = v.epoch_age < 120;
+
+            if allowed {
+                v.trust += 0.4 * confidence;
+                v.drift *= 0.96;
+                v.behavior_score += 0.2;
+
+            } else if !is_maturing {
+                v.trust -= 1.0 * (1.0 - confidence);
+                v.drift += 1.5 * (1.0 - confidence);
+                v.behavior_score -= 0.3;
+
+                if v.recovery_timer == 0 {
+                    v.recovery_timer = 50;
+                }
             }
+
+            v.trust = v.trust.clamp(0.0, 100.0);
+            v.drift = v.drift.clamp(0.0, 200.0);
+            v.behavior_score = v.behavior_score.clamp(0.0, 100.0);
         }
     }
 }

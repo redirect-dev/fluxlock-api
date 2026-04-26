@@ -21,6 +21,7 @@ use network_state::NetworkState;
 // 🔥 CORS
 use tower_http::cors::{CorsLayer, Any};
 use axum::http::Method;
+use routes::auth::auth_flow;
 
 #[tokio::main]
 async fn main() {
@@ -66,6 +67,7 @@ async fn main() {
         // 🔥 CORE PRODUCT
         .route("/evaluate", post(evaluate))
         .route("/access", post(access)) // 🔥 NEW (PILLAR 4)
+        .route("/auth/flow", post(auth_flow))
 
         // ⚔ ATTACKS
         .route("/attack/spike", post(spike))

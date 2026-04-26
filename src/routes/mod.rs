@@ -6,3 +6,4 @@ pub mod validate;
 pub mod attack;
 pub mod evaluate;
 pub mod access;
+pub mod auth;
