@@ -25,6 +25,7 @@ pub struct IdentityEntry {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Validator {
     pub id: u32,
+
     pub trust: f64,
     pub drift: f64,
     pub epoch_age: u64,
@@ -32,14 +33,28 @@ pub struct Validator {
 
     pub recovery_timer: u64,
 
+    pub identity_chain: Vec<IdentityEntry>,
+    pub chain_valid: bool,
+
+    pub continuity_score: f64,
+    pub identity_age: u64,
+    pub last_chain_break: u64,
+
+    pub historical_drift: Vec<f64>,
+    pub instability_score: f64,
+
+    // 🔥 CONSENSUS (FIXED)
     pub peer_votes_valid: u32,
     pub peer_votes_invalid: u32,
     pub network_accepted: bool,
     pub local_valid: bool,
     pub global_valid: bool,
+    pub consensus_confidence: f64,
 
-    pub identity_chain: Vec<IdentityEntry>,
-    pub chain_valid: bool,
+    // PRODUCT
+    pub confidence: f64,
+    pub risk_score: f64,
+    pub behavior_score: f64,
 
     pub decision: String,
     pub weight: f64,
@@ -52,6 +67,8 @@ pub struct Validator {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NetworkState {
     pub validators: Vec<Validator>,
+    pub global_epoch: u64,
+    pub epoch_pressure: f64,
 }
 
 // =========================
@@ -71,12 +88,6 @@ impl NetworkState {
 
                 recovery_timer: 0,
 
-                peer_votes_valid: 0,
-                peer_votes_invalid: 0,
-                network_accepted: false,
-                local_valid: false,
-                global_valid: false,
-
                 identity_chain: vec![IdentityEntry {
                     public_key: generate_identity(i),
                     signature: None,
@@ -84,13 +95,35 @@ impl NetworkState {
                 }],
                 chain_valid: true,
 
+                continuity_score: 100.0,
+                identity_age: 0,
+                last_chain_break: 0,
+
+                historical_drift: vec![],
+                instability_score: 0.0,
+
+                peer_votes_valid: 0,
+                peer_votes_invalid: 0,
+                network_accepted: false,
+                local_valid: false,
+                global_valid: false,
+                consensus_confidence: 0.0,
+
+                confidence: 0.5,
+                risk_score: 0.2,
+                behavior_score: 100.0,
+
                 decision: "WEIGHTED".into(),
                 weight: 0.2,
                 reason: "initial".into(),
             });
         }
 
-        Self { validators }
+        Self {
+            validators,
+            global_epoch: 0,
+            epoch_pressure: 0.0,
+        }
     }
 }
 
@@ -99,6 +132,11 @@ impl NetworkState {
 // =========================
 impl NetworkState {
     pub fn tick(&mut self) {
+        self.global_epoch += 1;
+
+        // 🔥 SLOWER PRESSURE (FIX)
+        self.epoch_pressure = (self.global_epoch as f64 / 2000.0).min(1.0);
+
         self.simulate_step();
         self.apply_consensus();
     }
@@ -114,112 +152,60 @@ impl NetworkState {
         let snapshot: Vec<(u32, f64, f64)> =
             self.validators.iter().map(|v| (v.id, v.trust, v.drift)).collect();
 
-        let avg_trust: f64 =
+        let avg_trust =
             snapshot.iter().map(|(_, t, _)| t).sum::<f64>() / snapshot.len() as f64;
 
         for v in &mut self.validators {
             v.epoch_age += 1;
+            v.identity_age += 1;
 
-            // =========================
-            // ☣️ QUARANTINE
-            // =========================
-            if !v.chain_valid {
-                v.status = "quarantined".into();
-                v.recovery_timer += 1;
-
-                v.trust += 0.25;
-                v.drift *= 0.95;
-
-                if v.recovery_timer > 80 {
-                    Self::force_rebuild_identity(v);
-                }
-
-                if v.trust > 25.0 && v.drift < 15.0 {
-                    v.chain_valid = true;
-                    v.status = "recovering".into();
-                    v.recovery_timer = 120;
-                }
-
-                continue;
-            }
-
-            // =========================
-            // 🔁 ROTATION
-            // =========================
-            if v.epoch_age > (350 + (v.id as u64 * 5)) && v.recovery_timer == 0 {
+            // 🔁 CONTROLLED ROTATION (FIX)
+            if (v.epoch_age > 350 ||
+                (self.epoch_pressure > 0.8 && v.drift < 20.0))
+                && v.recovery_timer == 0
+            {
                 Self::rotate_identity(v);
                 v.epoch_age = 0;
             }
 
-            if v.recovery_timer > 0 {
-                v.recovery_timer -= 1;
-            }
-
-            // =========================
-            // 🌊 DRIFT DECAY
-            // =========================
             v.drift *= 0.96;
 
-            // =========================
-            // 🌊 PROPAGATION
-            // =========================
-            let mut external_drift = 0.0;
-
-            for (peer_id, _peer_trust, peer_drift) in &snapshot {
-                if *peer_id == v.id {
-                    continue;
-                }
+            for (peer_id, _, peer_drift) in &snapshot {
+                if *peer_id == v.id { continue; }
 
                 if *peer_drift > 60.0 {
-                    let influence =
-                        (*peer_drift / 200.0) * (1.0 - (v.trust / 100.0));
-
-                    external_drift += influence * 8.0;
+                    let influence = (*peer_drift / 200.0)
+                        * rng.gen_range(2.0..5.0);
+                    v.drift += influence;
                 }
             }
 
-            v.drift += external_drift;
-
-            // =========================
-            // 🤝 NETWORK SUPPORT
-            // =========================
-            if v.trust < avg_trust * 0.5 {
-                v.trust += 0.3;
+            v.historical_drift.push(v.drift);
+            if v.historical_drift.len() > 50 {
+                v.historical_drift.remove(0);
             }
 
-            // =========================
-            // 🔥 RECOVERY
-            // =========================
-            if v.recovery_timer > 0 {
-                v.trust += 0.5;
-                v.drift *= 0.90;
-            } else {
-                if v.trust < 50.0 {
-                    v.trust += 0.4;
-                    v.drift *= 0.94;
-                } else if v.trust < 90.0 {
-                    v.trust += 0.2;
-                } else {
-                    v.trust += 0.05;
-                }
+            v.instability_score =
+                v.historical_drift.iter().sum::<f64>()
+                / v.historical_drift.len() as f64;
+
+            if v.trust < avg_trust {
+                v.trust += 0.2;
             }
 
-            // =========================
-            // 🎲 RANDOM DISTURBANCE
-            // =========================
-            if !(v.trust > 90.0 && v.drift < 5.0) {
-                if rng.gen_bool(0.002) {
-                    v.drift += rng.gen_range(10.0..25.0);
-                    v.trust -= rng.gen_range(5.0..10.0);
-                    v.recovery_timer = 120;
-                }
+            if v.instability_score > 40.0 {
+                v.trust *= 0.9;
             }
 
-            // =========================
-            // 🧭 STATUS
-            // =========================
+            if rng.gen_bool(0.002) {
+                v.drift += rng.gen_range(10.0..25.0);
+                v.trust -= rng.gen_range(5.0..10.0);
+                v.recovery_timer = 100;
+            }
+
             if v.recovery_timer > 0 {
                 v.status = "recovering".into();
+                v.recovery_timer -= 1;
             } else if v.drift > 80.0 {
                 v.status = "attacked".into();
             } else if v.drift > 25.0 {
@@ -248,7 +234,7 @@ impl NetworkState {
 
         if !valid {
             v.chain_valid = false;
-            v.recovery_timer = 0;
+            v.continuity_score *= 0.5;
             return;
         }
 
@@ -264,24 +250,10 @@ impl NetworkState {
 
         v.chain_valid = true;
     }
-
-    fn force_rebuild_identity(v: &mut Validator) {
-        v.identity_chain.clear();
-
-        v.identity_chain.push(IdentityEntry {
-            public_key: generate_identity(v.id),
-            signature: None,
-            trust: 20.0,
-        });
-
-        v.trust = 20.0;
-        v.drift = 10.0;
-        v.epoch_age = 0;
-    }
 }
 
 // =========================
-// 🗳️ CONSENSUS (RESTORED)
+// 🗳️ CONSENSUS (FIXED)
 // =========================
 impl NetworkState {
     fn apply_consensus(&mut self) {
@@ -293,25 +265,13 @@ impl NetworkState {
             let mut invalid = 0;
 
             for (peer_id, peer_trust) in &snapshot {
-                if *peer_id == v.id {
-                    continue;
-                }
+                if *peer_id == v.id { continue; }
 
-                let mut confidence =
-                    (v.trust / 100.0) * 0.7 + (1.0 - (v.drift / 150.0).min(1.0)) * 0.3;
+                let confidence =
+                    (v.trust / 100.0) * 0.6 +
+                    (1.0 - (v.drift / 150.0).min(1.0)) * 0.4;
 
-                if !v.chain_valid {
-                    confidence *= 0.2;
-                }
-
-                if v.recovery_timer > 0 {
-                    confidence *= 0.85;
-                }
-
-                let drift_penalty = (v.drift / 100.0).min(0.5);
-                let threshold = 0.55 + drift_penalty + (*peer_trust / 100.0) * 0.15;
-
-                if confidence > threshold {
+                if confidence > 0.5 + (*peer_trust / 100.0) * 0.1 {
                     valid += 1;
                 } else {
                     invalid += 1;
@@ -325,62 +285,67 @@ impl NetworkState {
                 0.0
             };
 
-            v.network_accepted =
-                ratio > 0.6 && v.drift < 25.0 && v.recovery_timer == 0;
+            let drift_factor = 1.0 - (v.drift / 150.0).min(1.0);
+            let trust_factor = v.trust / 100.0;
 
-            v.local_valid = ratio > 0.5;
+            v.confidence = (ratio * trust_factor * drift_factor).clamp(0.0, 1.0);
+            v.risk_score = (1.0 - v.confidence).clamp(0.0, 1.0);
 
-            v.global_valid =
-                v.network_accepted &&
-                v.chain_valid &&
-                v.drift < 15.0 &&
-                v.trust > 75.0;
+            // 🔥 FIX: REAL CONSENSUS
+            v.local_valid = v.confidence > 0.5;
+            v.global_valid = ratio > 0.66;
+            v.network_accepted = v.local_valid && v.global_valid;
+            v.consensus_confidence = ratio;
+
+            if v.confidence < 0.3 {
+                v.decision = "REJECT".into();
+                v.weight = 0.0;
+            } else if v.confidence < 0.7 {
+                v.decision = "WEIGHTED".into();
+                v.weight = v.confidence;
+            } else {
+                v.decision = "ACCEPT".into();
+                v.weight = v.confidence;
+            }
+
+            v.reason = "adaptive trust evaluation".into();
 
             v.peer_votes_valid = valid;
             v.peer_votes_invalid = invalid;
-
-            if !v.network_accepted {
-                v.decision = "REJECT".into();
-                v.weight = 0.0;
-            } else if v.epoch_age < 120 || v.drift > 15.0 {
-                v.decision = "WEIGHTED".into();
-                v.weight = 0.2;
-            } else {
-                v.decision = "ACCEPT".into();
-                v.weight = (v.trust / 100.0) * (1.0 - (v.drift / 100.0));
-            }
-
-            v.reason = "consensus evaluation".into();
         }
     }
 }
 
 // =========================
-// ⚔️ ATTACKS (RESTORED)
+// ⚔️ ATTACKS
 // =========================
 impl NetworkState {
+
     pub fn spike_attack(&mut self, id: u32) {
         if let Some(v) = self.validators.iter_mut().find(|v| v.id == id) {
-            v.drift += 80.0;
-            v.trust -= 40.0;
+            v.drift += 50.0;
+            v.trust *= 0.7;
             v.recovery_timer = 120;
+            v.status = "attacked".into();
         }
     }
 
     pub fn breach_attack(&mut self, id: u32) {
         if let Some(v) = self.validators.iter_mut().find(|v| v.id == id) {
-            v.drift = 150.0;
-            v.trust *= 0.3;
             v.chain_valid = false;
-            v.recovery_timer = 0;
+            v.trust *= 0.3;
+            v.drift += 80.0;
+            v.status = "compromised".into();
         }
     }
 
     pub fn network_attack(&mut self) {
         for v in &mut self.validators {
-            v.drift += 20.0;
-            v.trust -= 10.0;
-            v.recovery_timer = 100;
+            v.drift += 30.0;
+            v.trust *= 0.85;
+            if v.recovery_timer == 0 {
+                v.recovery_timer = 80;
+            }
         }
     }
 }
