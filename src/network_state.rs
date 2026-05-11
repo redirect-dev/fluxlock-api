@@ -2,6 +2,12 @@ use serde::{Serialize, Deserialize};
 
 use crate::identity::IdentityRegistry;
 
+use crate::engine::identity_validator::{
+    generate_identity,
+    rotate_identity,
+    verify_lineage,
+};
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Validator {
     pub id: u32,
@@ -18,14 +24,14 @@ pub struct Validator {
     pub chain_valid: bool,
     pub network_accepted: bool,
 
-    // 🔥 compatibility fields
+    // compatibility
     pub recovery_timer: u64,
     pub peer_votes_valid: u32,
     pub peer_votes_invalid: u32,
     pub local_valid: bool,
     pub global_valid: bool,
 
-    // identity chain
+    // lineage
     pub identity_chain: Vec<IdentityLink>,
 
     // health
@@ -42,7 +48,6 @@ pub struct IdentityLink {
 pub struct NetworkState {
     pub validators: Vec<Validator>,
 
-    // 🔥 NEW
     pub identities: IdentityRegistry,
 
     pub global_epoch: u64,
@@ -58,6 +63,16 @@ impl NetworkState {
         let mut validators = Vec::new();
 
         for i in 0..12 {
+
+            // 🔥 GENESIS IDENTITY
+            let genesis_key =
+                generate_identity(i);
+
+            let genesis_link =
+                IdentityLink {
+                    public_key: genesis_key,
+                    signature: None,
+                };
 
             validators.push(
                 Validator {
@@ -79,7 +94,8 @@ impl NetworkState {
                     local_valid: true,
                     global_valid: true,
 
-                    identity_chain: vec![],
+                    identity_chain:
+                        vec![genesis_link],
 
                     status: "healthy".into(),
                 }
@@ -108,6 +124,37 @@ impl NetworkState {
 
             validator.drift =
                 validator.drift.clamp(0.0, 100.0);
+
+            // 🔥 CONTINUOUS LINEAGE VERIFICATION
+            validator.chain_valid =
+                verify_lineage(
+                    &validator.identity_chain,
+                    validator.id,
+                );
+
+            // 🔴 FRACTURED STATE
+            if !validator.chain_valid {
+
+                validator.status =
+                    "fractured".into();
+
+                validator.network_accepted =
+                    false;
+
+                validator.local_valid =
+                    false;
+
+                validator.global_valid =
+                    false;
+
+                validator.trust *= 0.97;
+
+                validator.confidence *= 0.96;
+
+                validator.drift += 0.8;
+
+                continue;
+            }
 
             if validator.drift > 25.0 {
 
@@ -147,14 +194,99 @@ impl NetworkState {
             if idle_age > 600 {
 
                 identity.drift_score += 0.03;
+
                 identity.trust_score *= 0.999;
             }
 
             if identity.status == "recovering"
                 && identity.drift_score < 10.0 {
 
-                identity.status = "maturing".into();
+                identity.status =
+                    "maturing".into();
             }
+        }
+    }
+
+    // =========================
+    // 🔁 ROTATE VALIDATOR IDENTITY
+    // =========================
+    pub fn evolve_identity(
+        &mut self,
+        validator_id: u32,
+    ) {
+
+        let validator =
+            match self.validators
+                .iter_mut()
+                .find(|v| v.id == validator_id)
+        {
+            Some(v) => v,
+            None => return,
+        };
+
+        let rotation_index =
+            validator.identity_chain.len();
+
+        let message =
+            format!(
+                "validator:{}:rotation:{}",
+                validator_id,
+                rotation_index,
+            );
+
+        let signature =
+            rotate_identity(
+                validator_id,
+                message.as_bytes(),
+            );
+
+        let new_key =
+            generate_identity(
+                validator_id
+            );
+
+        validator.identity_chain.push(
+            IdentityLink {
+
+                public_key:
+                    new_key,
+
+                signature:
+                    Some(signature),
+            }
+        );
+
+        // 🔥 VERIFY ENTIRE LINEAGE
+        validator.chain_valid =
+            verify_lineage(
+                &validator.identity_chain,
+                validator_id,
+            );
+
+        // 🔴 FRACTURE DETECTION
+        if !validator.chain_valid {
+
+            validator.status =
+                "fractured".into();
+
+            validator.trust *= 0.5;
+
+            validator.confidence *= 0.5;
+
+            validator.network_accepted =
+                false;
+
+            validator.local_valid =
+                false;
+
+            validator.global_valid =
+                false;
+        }
+
+        // prevent infinite memory growth
+        if validator.identity_chain.len() > 64 {
+
+            validator.identity_chain.remove(0);
         }
     }
 
@@ -172,9 +304,11 @@ impl NetworkState {
         {
 
             v.drift += 12.0;
+
             v.trust *= 0.92;
 
-            v.status = "recovering".into();
+            v.status =
+                "recovering".into();
         }
     }
 
@@ -194,11 +328,19 @@ impl NetworkState {
             v.drift += 35.0;
 
             v.trust *= 0.7;
+
             v.confidence *= 0.75;
 
             v.chain_valid = false;
 
-            v.status = "breached".into();
+            v.network_accepted = false;
+
+            v.local_valid = false;
+
+            v.global_valid = false;
+
+            v.status =
+                "breached".into();
         }
     }
 
@@ -243,10 +385,17 @@ impl NetworkState {
             } else {
 
                 v.confidence *= 0.97;
+
                 v.trust *= 0.985;
 
                 v.drift += 2.0;
             }
+
+            v.confidence =
+                v.confidence.clamp(0.0, 1.0);
+
+            v.trust =
+                v.trust.clamp(0.0, 100.0);
         }
     }
 

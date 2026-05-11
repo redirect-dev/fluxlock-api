@@ -1,77 +1,192 @@
 use pqcrypto_dilithium::dilithium2;
-use pqcrypto_traits::sign::{PublicKey, SecretKey, DetachedSignature};
+
+use pqcrypto_traits::sign::{
+    PublicKey,
+    SecretKey,
+    DetachedSignature,
+};
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+
 use once_cell::sync::Lazy;
 
 // =========================
 // 🔐 GLOBAL KEY STORE
 // =========================
 pub static KEY_STORE: Lazy<
-    Mutex<HashMap<u32, (dilithium2::PublicKey, dilithium2::SecretKey)>>
+    Mutex<
+        HashMap<
+            u32,
+            (
+                dilithium2::PublicKey,
+                dilithium2::SecretKey
+            )
+        >
+    >
 > = Lazy::new(|| Mutex::new(HashMap::new()));
 
 // =========================
 // 🔑 CREATE IDENTITY
 // =========================
-pub fn generate_identity(id: u32) -> Vec<u8> {
-    let (pk, sk) = dilithium2::keypair();
+pub fn generate_identity(
+    id: u32
+) -> Vec<u8> {
 
-    let mut store = KEY_STORE.lock().unwrap();
-    store.insert(id, (pk.clone(), sk));
+    let (pk, sk) =
+        dilithium2::keypair();
+
+    let mut store =
+        KEY_STORE.lock().unwrap();
+
+    store.insert(
+        id,
+        (pk.clone(), sk)
+    );
 
     pk.as_bytes().to_vec()
 }
 
 // =========================
-// 🔁 ROTATE IDENTITY (SIGNED)
+// 🔁 ROTATE IDENTITY
 // =========================
-pub fn rotate_identity(id: u32, new_message: &[u8]) -> Vec<u8> {
-    let mut store = KEY_STORE.lock().unwrap();
+pub fn rotate_identity(
+    id: u32,
+    new_message: &[u8]
+) -> Vec<u8> {
 
-    let (_old_pk, old_sk) = store.get(&id).unwrap().clone();
+    let mut store =
+        KEY_STORE.lock().unwrap();
 
-    // 🔥 FIXED FUNCTION NAME
-    let signature = dilithium2::detached_sign(new_message, &old_sk);
+    let (_old_pk, old_sk) =
+        store.get(&id)
+            .unwrap()
+            .clone();
 
-    // generate new keypair
-    let (new_pk, new_sk) = dilithium2::keypair();
+    let signature =
+        dilithium2::detached_sign(
+            new_message,
+            &old_sk
+        );
 
-    store.insert(id, (new_pk.clone(), new_sk));
+    let (new_pk, new_sk) =
+        dilithium2::keypair();
 
-    signature.as_bytes().to_vec()
+    store.insert(
+        id,
+        (new_pk.clone(), new_sk)
+    );
+
+    signature
+        .as_bytes()
+        .to_vec()
 }
 
 // =========================
-// ✅ VERIFY CHAIN LINK
+// ✅ VERIFY LINK
 // =========================
 pub fn verify_link(
     old_pk_bytes: &[u8],
     new_message: &[u8],
     sig_bytes: &[u8],
 ) -> bool {
-    let pk = match dilithium2::PublicKey::from_bytes(old_pk_bytes) {
+
+    let pk =
+        match dilithium2::PublicKey
+            ::from_bytes(old_pk_bytes)
+    {
         Ok(pk) => pk,
         Err(_) => return false,
     };
 
-    let sig = match dilithium2::DetachedSignature::from_bytes(sig_bytes) {
+    let sig =
+        match dilithium2::DetachedSignature
+            ::from_bytes(sig_bytes)
+    {
         Ok(sig) => sig,
         Err(_) => return false,
     };
 
-    dilithium2::verify_detached_signature(&sig, new_message, &pk).is_ok()
+    dilithium2
+        ::verify_detached_signature(
+            &sig,
+            new_message,
+            &pk
+        )
+        .is_ok()
 }
 
 // =========================
-// 🧠 VALIDATION LOGIC (REQUIRED BY API)
+// 🔗 VERIFY ENTIRE LINEAGE
+// =========================
+pub fn verify_lineage(
+    chain: &Vec<
+        crate::network_state::IdentityLink
+    >,
+    validator_id: u32,
+) -> bool {
+
+    if chain.is_empty() {
+        return false;
+    }
+
+    // genesis always valid
+    if chain.len() == 1 {
+        return true;
+    }
+
+    for i in 1..chain.len() {
+
+        let previous =
+            &chain[i - 1];
+
+        let current =
+            &chain[i];
+
+        let signature =
+            match &current.signature {
+
+                Some(sig) => sig,
+
+                None => return false,
+            };
+
+        let message =
+            format!(
+                "validator:{}:rotation:{}",
+                validator_id,
+                i
+            );
+
+        let valid =
+            verify_link(
+                &previous.public_key,
+                message.as_bytes(),
+                signature,
+            );
+
+        if !valid {
+
+            return false;
+        }
+    }
+
+    true
+}
+
+// =========================
+// 🧠 VALIDATION RESULT
 // =========================
 pub struct ValidationResult {
+
     pub valid: bool,
+
     pub reason: String,
 }
 
+// =========================
+// 🧠 VALIDATION LOGIC
+// =========================
 pub fn validate_identity_logic(
     trust: f64,
     drift: f64,
@@ -81,56 +196,91 @@ pub fn validate_identity_logic(
     network_accepted: bool,
 ) -> ValidationResult {
 
-    // 🔴 HARD FAILS
+    // 🔴 HARD FAIL
     if compromised {
+
         return ValidationResult {
+
             valid: false,
-            reason: "identity compromised".into(),
+
+            reason:
+                "identity compromised"
+                    .into(),
         };
     }
 
+    // 🔴 BROKEN LINEAGE
     if !epoch_valid {
+
         return ValidationResult {
+
             valid: false,
-            reason: "invalid identity chain".into(),
+
+            reason:
+                "broken lineage detected"
+                    .into(),
         };
     }
 
     // 🔥 MATURITY GATE
     if epoch_age < 120 {
+
         return ValidationResult {
+
             valid: false,
-            reason: "identity too new (maturing)".into(),
+
+            reason:
+                "identity too new"
+                    .into(),
         };
     }
 
-    // 🔥 NETWORK CONSENSUS REQUIRED
+    // 🌐 NETWORK REQUIRED
     if !network_accepted {
+
         return ValidationResult {
+
             valid: false,
-            reason: "network has not accepted identity".into(),
+
+            reason:
+                "network rejected identity"
+                    .into(),
         };
     }
 
     // 🔴 INSTABILITY
     if drift > 80.0 {
+
         return ValidationResult {
+
             valid: false,
-            reason: "unstable identity (high drift)".into(),
+
+            reason:
+                "identity unstable"
+                    .into(),
         };
     }
 
     // 🟡 RECOVERY
     if trust < 60.0 {
+
         return ValidationResult {
+
             valid: true,
-            reason: "recovering identity".into(),
+
+            reason:
+                "identity recovering"
+                    .into(),
         };
     }
 
     // 🟢 HEALTHY
     ValidationResult {
+
         valid: true,
-        reason: "identity stable and verified".into(),
+
+        reason:
+            "identity stable and verified"
+                .into(),
     }
 }

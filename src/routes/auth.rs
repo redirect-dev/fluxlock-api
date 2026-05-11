@@ -49,7 +49,6 @@ pub struct AuthRequest {
 
     pub nonce: String,
 
-    // 🔥 CHANGED
     pub timestamp: serde_json::Value,
 }
 
@@ -79,6 +78,9 @@ pub struct AuthResponse {
     pub continuity_score: f64,
     pub session_count: u64,
     pub credential_depth: u64,
+
+    // 🔥 NEW
+    pub lineage_depth: usize,
 }
 
 // =========================
@@ -92,16 +94,13 @@ pub async fn auth_flow(
     println!("🔥 AUTH REQUEST RECEIVED");
 
     // =========================
-    // 🔥 TIMESTAMP PARSE
+    // ⏱ TIMESTAMP
     // =========================
     let timestamp =
         payload.timestamp
             .as_u64()
             .unwrap_or(0);
 
-    // =========================
-    // ⏱ TIMESTAMP CHECK
-    // =========================
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -117,7 +116,7 @@ pub async fn auth_flow(
     }
 
     // =========================
-    // 🔁 NONCE CHECK
+    // 🔁 NONCE
     // =========================
     {
         let mut nonce_store =
@@ -138,27 +137,28 @@ pub async fn auth_flow(
     }
 
     // =========================
-    // 🔐 LOAD VALIDATOR KEY
+    // 🔐 VALIDATOR KEY
     // =========================
     let store = KEY_STORE.lock().unwrap();
 
     let (pk, _) =
-        match store.get(&payload.validator_id) {
+        match store.get(&payload.validator_id)
+    {
 
-            Some(pair) => pair,
+        Some(pair) => pair,
 
-            None => {
+        None => {
 
-                return failure_response(
-                    payload.identity_id,
-                    "validator not found",
-                    "unknown",
-                );
-            }
-        };
+            return failure_response(
+                payload.identity_id,
+                "validator not found",
+                "unknown",
+            );
+        }
+    };
 
     // =========================
-    // 🔓 DECODE SIGNATURE
+    // 🔓 SIGNATURE DECODE
     // =========================
     let decoded =
         match general_purpose::STANDARD
@@ -197,25 +197,26 @@ pub async fn auth_flow(
     };
 
     // =========================
-    // 🔐 OPEN SIGNED MESSAGE
+    // 🔐 VERIFY SIGNATURE
     // =========================
     let opened =
         match dilithium2::open(
             &signed_msg,
             pk,
-        ) {
+        )
+    {
 
-            Ok(msg) => msg,
+        Ok(msg) => msg,
 
-            Err(_) => {
+        Err(_) => {
 
-                return failure_response(
-                    payload.identity_id,
-                    "signature verification failed",
-                    "invalid",
-                );
-            }
-        };
+            return failure_response(
+                payload.identity_id,
+                "signature verification failed",
+                "invalid",
+            );
+        }
+    };
 
     let opened_str =
         String::from_utf8_lossy(&opened);
@@ -260,6 +261,9 @@ pub async fn auth_flow(
         }
     };
 
+    // =========================
+    // 🔗 VALIDATION
+    // =========================
     let identity_valid =
         validator.chain_valid
         && validator.epoch_age >= 120;
@@ -301,17 +305,28 @@ pub async fn auth_flow(
                 .into();
     }
 
+    // =========================
+    // 🧠 FEEDBACK
+    // =========================
     state.apply_access_feedback(
         payload.validator_id,
         allowed,
         confidence,
     );
 
+    // =========================
+    // 🔗 LIVE IDENTITY EVOLUTION
+    // =========================
     if allowed {
 
         state.identity_success(
             &payload.identity_id,
             confidence,
+        );
+
+        // 🔥 EVOLVE CRYPTOGRAPHIC LINEAGE
+        state.evolve_identity(
+            payload.validator_id,
         );
 
     } else {
@@ -321,6 +336,20 @@ pub async fn auth_flow(
         );
     }
 
+    // =========================
+    // 🔍 UPDATED VALIDATOR
+    // =========================
+    let evolved_validator =
+        state.validators
+            .iter()
+            .find(
+                |v|
+                    v.id
+                    == payload.validator_id
+            )
+            .unwrap()
+            .clone();
+
     let identity =
         state.identities
             .identities
@@ -328,11 +357,15 @@ pub async fn auth_flow(
             .unwrap()
             .clone();
 
+    // =========================
+    // 📤 RESPONSE
+    // =========================
     Json(AuthResponse {
 
         authenticated: allowed,
 
         signature_valid: true,
+
         identity_valid,
 
         allowed,
@@ -341,13 +374,17 @@ pub async fn auth_flow(
 
         reason,
 
-        epoch_age: validator.epoch_age,
+        epoch_age:
+            evolved_validator.epoch_age,
 
-        trust: validator.trust,
+        trust:
+            evolved_validator.trust,
 
-        drift: validator.drift,
+        drift:
+            evolved_validator.drift,
 
-        status: validator.status,
+        status:
+            evolved_validator.status,
 
         identity_id:
             identity.identity_id,
@@ -360,11 +397,16 @@ pub async fn auth_flow(
 
         credential_depth:
             identity.credential_depth,
+
+        lineage_depth:
+            evolved_validator
+                .identity_chain
+                .len(),
     })
 }
 
 // =========================
-// ❌ FAILURE
+// ❌ FAILURE RESPONSE
 // =========================
 fn failure_response(
     identity_id: String,
@@ -401,5 +443,7 @@ fn failure_response(
         session_count: 0,
 
         credential_depth: 0,
+
+        lineage_depth: 0,
     })
 }
